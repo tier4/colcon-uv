@@ -33,6 +33,16 @@ class UvVerb(VerbExtensionPoint):
         install_parser.add_argument(
             "--uv-args", nargs="*", help="Additional arguments to pass to UV"
         )
+        install_parser.add_argument(
+            "--dependency-groups",
+            nargs="*",
+            metavar="GROUP",
+            type=str,
+            default=None,
+            help="Specify which dependency groups to install. "
+            "If not provided, all groups are installed. "
+            "Pass with no arguments to install no groups.",
+        )
 
     def main(self, *, context):  # noqa: D102
         args = context.args
@@ -62,7 +72,11 @@ class UvVerb(VerbExtensionPoint):
 
         for package in packages:
             try:
-                install_dependencies(package, install_base, merge_install)
+                dependency_groups = getattr(args, "dependency_groups", None)
+                install_dependencies(
+                    package, install_base, merge_install,
+                    dependency_groups=dependency_groups,
+                )
             except Exception as e:
                 logger.error(
                     f"Failed to install dependencies for '{package.name}': {e}"

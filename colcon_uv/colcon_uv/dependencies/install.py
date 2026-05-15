@@ -63,7 +63,10 @@ def main():
 
     for project in discover_packages(args.base_paths):
         logger.info(f"Installing dependencies for {project.path.name}...")
-        install_dependencies(project, args.install_base, args.merge_install)
+        install_dependencies(
+            project, args.install_base, args.merge_install,
+            dependency_groups=args.dependency_groups,
+        )
 
     logger.info("Dependencies installed!")
 
@@ -125,7 +128,10 @@ def _resolve_python_version(project: UvPackage) -> str:
 
 
 def install_dependencies(
-    project: UvPackage, install_base: Path, merge_install: bool
+    project: UvPackage,
+    install_base: Path,
+    merge_install: bool,
+    dependency_groups: Optional[List[str]] = None,
 ) -> None:
     """Install dependencies for a UV package using UV."""
     # Handle both contexts:
@@ -237,10 +243,29 @@ def install_dependencies(
         sys.exit(1)
 
     # Additionally, install dependency groups (PEP 735) if present
-    dependency_groups = project.pyproject_data.get("dependency-groups", {})
+    available_groups = project.pyproject_data.get("dependency-groups", {})
 
-    if dependency_groups:
-        group_names = list(dependency_groups.keys())
+    if available_groups:
+        if dependency_groups is None:
+            # No --dependency-groups flag: install all groups (backward compatible)
+            group_names = list(available_groups.keys())
+        elif len(dependency_groups) == 0:
+            # --dependency-groups with no args: install no groups
+            group_names = []
+        else:
+            # --dependency-groups dev test: install only the specified groups
+            unknown_groups = set(dependency_groups) - set(available_groups.keys())
+            if unknown_groups:
+                logger.warning(
+                    f"Requested dependency groups not found in pyproject.toml: "
+                    f"{', '.join(sorted(unknown_groups))}. "
+                    f"Available groups: {', '.join(sorted(available_groups.keys()))}"
+                )
+            group_names = [g for g in dependency_groups if g in available_groups]
+    else:
+        group_names = []
+
+    if group_names:
         logger.info(f"Installing dependency groups: {', '.join(group_names)}")
 
         cmd = ["uv", "--no-progress", "pip", "install", "--python", str(python_exe)]
@@ -273,7 +298,10 @@ def install_dependencies(
 
 
 def install_dependencies_from_descriptor(
-    pkg_descriptor, install_base: Path, merge_install: bool
+    pkg_descriptor,
+    install_base: Path,
+    merge_install: bool,
+    dependency_groups: Optional[List[str]] = None,
 ):
     """Install dependencies from a PackageDescriptor object.
 
@@ -281,7 +309,10 @@ def install_dependencies_from_descriptor(
     """
     try:
         uv_package = UvPackage(pkg_descriptor.path)
-        install_dependencies(uv_package, install_base, merge_install)
+        install_dependencies(
+            uv_package, install_base, merge_install,
+            dependency_groups=dependency_groups,
+        )
     except NotAUvPackageError as e:
         # Skip packages that aren't UV packages
         logger.debug(f"Skipping non-UV package {pkg_descriptor.name}: {e}")
@@ -315,6 +346,17 @@ def _parse_args() -> argparse.Namespace:
         "--merge-install",
         action="store_true",
         help="Merge all install prefixes into a single location",
+    )
+
+    parser.add_argument(
+        "--dependency-groups",
+        nargs="*",
+        metavar="GROUP",
+        type=str,
+        default=None,
+        help="Specify which dependency groups to install. "
+        "If not provided, all groups are installed. "
+        "Pass with no arguments to install no groups.",
     )
 
     parser.add_argument(
