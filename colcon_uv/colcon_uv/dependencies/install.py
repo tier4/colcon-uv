@@ -247,8 +247,23 @@ def install_dependencies(
 
     if available_groups:
         if dependency_groups is None:
-            # No --dependency-groups flag: install all groups (backward compatible)
-            group_names = list(available_groups.keys())
+            # No --dependency-groups flag: check per-package default in
+            # [tool.colcon-uv-ros].dependency-groups, then fall back to all groups
+            default_groups = (
+                project.pyproject_data.get("tool", {})
+                .get("colcon-uv-ros", {})
+                .get("dependency-groups", None)
+            )
+            if default_groups is not None:
+                group_names = [g for g in default_groups if g in available_groups]
+                unknown = set(default_groups) - set(available_groups.keys())
+                if unknown:
+                    logger.warning(
+                        f"Default dependency groups not found in "
+                        f"[dependency-groups]: {', '.join(sorted(unknown))}"
+                    )
+            else:
+                group_names = list(available_groups.keys())
         elif len(dependency_groups) == 0:
             # --dependency-groups with no args: install no groups
             group_names = []
