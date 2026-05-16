@@ -43,6 +43,17 @@ class UvVerb(VerbExtensionPoint):
             "If not provided, all groups are installed. "
             "Pass with no arguments to install no groups.",
         )
+        install_parser.add_argument(
+            "--extras",
+            nargs="*",
+            metavar="EXTRA",
+            type=str,
+            default=None,
+            help="Specify which optional dependency extras to install. "
+            "If not provided, all extras are installed "
+            "(or per-package default from [tool.colcon-uv-ros].extras). "
+            "Pass with no arguments to install no extras.",
+        )
 
     def main(self, *, context):  # noqa: D102
         args = context.args
@@ -73,9 +84,11 @@ class UvVerb(VerbExtensionPoint):
         for package in packages:
             try:
                 dependency_groups = getattr(args, "dependency_groups", None)
+                extras = getattr(args, "extras", None)
                 install_dependencies(
                     package, install_base, merge_install,
                     dependency_groups=dependency_groups,
+                    extras=extras,
                 )
             except Exception as e:
                 logger.error(
