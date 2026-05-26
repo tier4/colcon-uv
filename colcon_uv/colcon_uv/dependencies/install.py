@@ -63,7 +63,11 @@ def main():
 
     for project in discover_packages(args.base_paths):
         logger.info(f"Installing dependencies for {project.path.name}...")
-        install_dependencies(project, args.install_base, args.merge_install)
+        install_dependencies(
+            project, args.install_base, args.merge_install,
+            dependency_groups=args.dependency_groups,
+            extras=args.extras,
+        )
 
     logger.info("Dependencies installed!")
 
@@ -125,7 +129,11 @@ def _resolve_python_version(project: UvPackage) -> str:
 
 
 def install_dependencies(
-    project: UvPackage, install_base: Path, merge_install: bool
+    project: UvPackage,
+    install_base: Path,
+    merge_install: bool,
+    dependency_groups: Optional[List[str]] = None,
+    extras: Optional[List[str]] = None,
 ) -> None:
     """Install dependencies for a UV package using UV."""
     # Handle both contexts:
@@ -154,21 +162,24 @@ def install_dependencies(
 
     # --system-site-packages is needed because ROS 2 packages like rclpy are installed
     # system-wide (not available on PyPI) and our nodes need access to them
-    try:
-        subprocess.run(
-            [
-                "uv", "venv",
-                "--system-site-packages",
-                "--python", python_version,
-                str(venv_path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to create venv: {e.stderr}")
-        raise
+    if (venv_path / "bin" / "python").exists():
+        logger.info(f"Reusing existing venv at {venv_path}")
+    else:
+        try:
+            subprocess.run(
+                [
+                    "uv", "venv",
+                    "--system-site-packages",
+                    "--python", python_version,
+                    str(venv_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to create venv: {e.stderr}")
+            raise
 
     # Install dependencies and the package itself to the target venv
     # Use --python to specify the target venv's python
@@ -179,9 +190,45 @@ def install_dependencies(
     )
 
     if optional_deps:
-        extras = ",".join(optional_deps.keys())
-        install_target = f"{project.path}[{extras}]"
-        logger.info(f"Installing with optional dependencies: {extras}")
+        if extras is None:
+            # No --extras flag: check per-package default in
+            # [tool.colcon-uv-ros].extras, then fall back to all extras
+            default_extras = (
+                project.pyproject_data.get("tool", {})
+                .get("colcon-uv-ros", {})
+                .get("extras", None)
+            )
+            if default_extras is not None:
+                extra_names = [e for e in default_extras if e in optional_deps]
+                unknown = set(default_extras) - set(optional_deps.keys())
+                if unknown:
+                    logger.warning(
+                        f"Default extras not found in "
+                        f"[project.optional-dependencies]: {', '.join(sorted(unknown))}"
+                    )
+            else:
+                extra_names = list(optional_deps.keys())
+        elif len(extras) == 0:
+            # --extras with no args: install no extras
+            extra_names = []
+        else:
+            # --extras codegen gui: install only the specified extras
+            unknown_extras = set(extras) - set(optional_deps.keys())
+            if unknown_extras:
+                logger.warning(
+                    f"Requested extras not found in pyproject.toml: "
+                    f"{', '.join(sorted(unknown_extras))}. "
+                    f"Available extras: {', '.join(sorted(optional_deps.keys()))}"
+                )
+            extra_names = [e for e in extras if e in optional_deps]
+
+        if extra_names:
+            extras_str = ",".join(extra_names)
+            install_target = f"{project.path}[{extras_str}]"
+            logger.info(f"Installing with optional dependencies: {extras_str}")
+        else:
+            install_target = str(project.path)
+            logger.info("Installing without optional dependencies")
     else:
         install_target = str(project.path)
 
@@ -237,10 +284,44 @@ def install_dependencies(
         sys.exit(1)
 
     # Additionally, install dependency groups (PEP 735) if present
-    dependency_groups = project.pyproject_data.get("dependency-groups", {})
+    available_groups = project.pyproject_data.get("dependency-groups", {})
 
-    if dependency_groups:
-        group_names = list(dependency_groups.keys())
+    if available_groups:
+        if dependency_groups is None:
+            # No --dependency-groups flag: check per-package default in
+            # [tool.colcon-uv-ros].dependency-groups, then fall back to all groups
+            default_groups = (
+                project.pyproject_data.get("tool", {})
+                .get("colcon-uv-ros", {})
+                .get("dependency-groups", None)
+            )
+            if default_groups is not None:
+                group_names = [g for g in default_groups if g in available_groups]
+                unknown = set(default_groups) - set(available_groups.keys())
+                if unknown:
+                    logger.warning(
+                        f"Default dependency groups not found in "
+                        f"[dependency-groups]: {', '.join(sorted(unknown))}"
+                    )
+            else:
+                group_names = list(available_groups.keys())
+        elif len(dependency_groups) == 0:
+            # --dependency-groups with no args: install no groups
+            group_names = []
+        else:
+            # --dependency-groups dev test: install only the specified groups
+            unknown_groups = set(dependency_groups) - set(available_groups.keys())
+            if unknown_groups:
+                logger.warning(
+                    f"Requested dependency groups not found in pyproject.toml: "
+                    f"{', '.join(sorted(unknown_groups))}. "
+                    f"Available groups: {', '.join(sorted(available_groups.keys()))}"
+                )
+            group_names = [g for g in dependency_groups if g in available_groups]
+    else:
+        group_names = []
+
+    if group_names:
         logger.info(f"Installing dependency groups: {', '.join(group_names)}")
 
         cmd = ["uv", "--no-progress", "pip", "install", "--python", str(python_exe)]
@@ -273,7 +354,11 @@ def install_dependencies(
 
 
 def install_dependencies_from_descriptor(
-    pkg_descriptor, install_base: Path, merge_install: bool
+    pkg_descriptor,
+    install_base: Path,
+    merge_install: bool,
+    dependency_groups: Optional[List[str]] = None,
+    extras: Optional[List[str]] = None,
 ):
     """Install dependencies from a PackageDescriptor object.
 
@@ -281,7 +366,11 @@ def install_dependencies_from_descriptor(
     """
     try:
         uv_package = UvPackage(pkg_descriptor.path)
-        install_dependencies(uv_package, install_base, merge_install)
+        install_dependencies(
+            uv_package, install_base, merge_install,
+            dependency_groups=dependency_groups,
+            extras=extras,
+        )
     except NotAUvPackageError as e:
         # Skip packages that aren't UV packages
         logger.debug(f"Skipping non-UV package {pkg_descriptor.name}: {e}")
@@ -315,6 +404,29 @@ def _parse_args() -> argparse.Namespace:
         "--merge-install",
         action="store_true",
         help="Merge all install prefixes into a single location",
+    )
+
+    parser.add_argument(
+        "--dependency-groups",
+        nargs="*",
+        metavar="GROUP",
+        type=str,
+        default=None,
+        help="Specify which dependency groups to install. "
+        "If not provided, all groups are installed. "
+        "Pass with no arguments to install no groups.",
+    )
+
+    parser.add_argument(
+        "--extras",
+        nargs="*",
+        metavar="EXTRA",
+        type=str,
+        default=None,
+        help="Specify which optional dependency extras to install. "
+        "If not provided, all extras are installed "
+        "(or per-package default from [tool.colcon-uv-ros].extras). "
+        "Pass with no arguments to install no extras.",
     )
 
     parser.add_argument(

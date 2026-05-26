@@ -289,6 +289,61 @@ scripts = {"test_script" = "test_package.main:main"}
             self.assertTrue(ros_executable.is_symlink())
             self.assertEqual(ros_executable.readlink(), test_executable)
 
+    def test_add_arguments_dependency_groups(self):
+        """Test --dependency-groups argument parsing."""
+        import argparse
+
+        task = self.task_class()
+        parser = argparse.ArgumentParser()
+        task.add_arguments(parser=parser)
+
+        # With specific groups
+        args = parser.parse_args(["--dependency-groups", "dev", "test"])
+        self.assertEqual(args.dependency_groups, ["dev", "test"])
+
+        # Without the flag (default None)
+        args = parser.parse_args([])
+        self.assertIsNone(args.dependency_groups)
+
+        # With the flag but no arguments (empty list)
+        args = parser.parse_args(["--dependency-groups"])
+        self.assertEqual(args.dependency_groups, [])
+
+    @patch("colcon_uv.task.uv.build.install_dependencies_from_descriptor")
+    async def test_build_passes_dependency_groups(self, mock_install):
+        """Test that build passes dependency_groups to install function."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            pyproject_content = """
+[project]
+name = "test_package"
+
+[tool.colcon-uv-ros]
+name = "test_package"
+"""
+            (temp_path / "pyproject.toml").write_text(pyproject_content)
+
+            task = self.task_class()
+
+            task.context = MagicMock()
+            task.context.pkg = MagicMock()
+            task.context.pkg.path = temp_path
+            task.context.pkg.name = "test_package"
+            task.context.args = MagicMock()
+            task.context.args.install_base = str(temp_path / "install")
+            task.context.args.dependency_groups = ["dev"]
+
+            task._add_data_files = AsyncMock(return_value=0)
+            task._create_executable_symlinks = MagicMock()
+            task._create_environment_hooks = MagicMock()
+
+            await task.build()
+
+            mock_install.assert_called_once()
+            call_kwargs = mock_install.call_args
+            self.assertEqual(call_kwargs.kwargs["dependency_groups"], ["dev"])
+
     @patch("colcon_core.environment.create_environment_scripts")
     @patch("colcon_core.environment.create_environment_hooks")
     @patch("colcon_core.shell.create_environment_hook")

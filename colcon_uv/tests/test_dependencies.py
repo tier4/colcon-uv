@@ -167,5 +167,322 @@ name = "test_package"
             self.assertTrue(mock_run.called)
 
 
+    @patch("subprocess.run")
+    def test_install_all_groups_by_default(self, mock_run):
+        """Test that all dependency groups are installed when dependency_groups is None."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            pyproject_content = """
+[project]
+name = "test_package"
+
+[tool.colcon-uv-ros]
+name = "test_package"
+
+[dependency-groups]
+dev = ["pytest"]
+lint = ["ruff"]
+"""
+            (temp_path / "pyproject.toml").write_text(pyproject_content)
+
+            from colcon_uv.dependencies.install import UvPackage
+
+            project = UvPackage(temp_path)
+            install_base = Path(temp_dir) / "install"
+
+            mock_run.return_value = MagicMock(returncode=0)
+
+            self.install_dependencies(project, install_base, False, dependency_groups=None)
+
+            # Find the call that installs dependency groups (has --group flag)
+            group_calls = [
+                call for call in mock_run.call_args_list
+                if any("--group" in str(arg) for arg in call.args[0])
+            ]
+            self.assertEqual(len(group_calls), 1)
+            cmd = group_calls[0].args[0]
+            self.assertIn("--group", cmd)
+            # Both groups should be present
+            group_indices = [i for i, x in enumerate(cmd) if x == "--group"]
+            group_values = [cmd[i + 1] for i in group_indices]
+            self.assertIn("dev", group_values)
+            self.assertIn("lint", group_values)
+
+    @patch("subprocess.run")
+    def test_install_specific_groups(self, mock_run):
+        """Test that only specified dependency groups are installed."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            pyproject_content = """
+[project]
+name = "test_package"
+
+[tool.colcon-uv-ros]
+name = "test_package"
+
+[dependency-groups]
+dev = ["pytest"]
+lint = ["ruff"]
+docs = ["sphinx"]
+"""
+            (temp_path / "pyproject.toml").write_text(pyproject_content)
+
+            from colcon_uv.dependencies.install import UvPackage
+
+            project = UvPackage(temp_path)
+            install_base = Path(temp_dir) / "install"
+
+            mock_run.return_value = MagicMock(returncode=0)
+
+            self.install_dependencies(
+                project, install_base, False, dependency_groups=["dev"]
+            )
+
+            group_calls = [
+                call for call in mock_run.call_args_list
+                if any("--group" in str(arg) for arg in call.args[0])
+            ]
+            self.assertEqual(len(group_calls), 1)
+            cmd = group_calls[0].args[0]
+            group_indices = [i for i, x in enumerate(cmd) if x == "--group"]
+            group_values = [cmd[i + 1] for i in group_indices]
+            self.assertEqual(group_values, ["dev"])
+
+    @patch("subprocess.run")
+    def test_install_no_groups(self, mock_run):
+        """Test that no dependency groups are installed when empty list is passed."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            pyproject_content = """
+[project]
+name = "test_package"
+
+[tool.colcon-uv-ros]
+name = "test_package"
+
+[dependency-groups]
+dev = ["pytest"]
+"""
+            (temp_path / "pyproject.toml").write_text(pyproject_content)
+
+            from colcon_uv.dependencies.install import UvPackage
+
+            project = UvPackage(temp_path)
+            install_base = Path(temp_dir) / "install"
+
+            mock_run.return_value = MagicMock(returncode=0)
+
+            self.install_dependencies(
+                project, install_base, False, dependency_groups=[]
+            )
+
+            # No call should contain --group
+            group_calls = [
+                call for call in mock_run.call_args_list
+                if any("--group" in str(arg) for arg in call.args[0])
+            ]
+            self.assertEqual(len(group_calls), 0)
+
+    @patch("subprocess.run")
+    def test_install_unknown_group_warning(self, mock_run):
+        """Test that unknown groups produce a warning and are skipped."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            pyproject_content = """
+[project]
+name = "test_package"
+
+[tool.colcon-uv-ros]
+name = "test_package"
+
+[dependency-groups]
+dev = ["pytest"]
+"""
+            (temp_path / "pyproject.toml").write_text(pyproject_content)
+
+            from colcon_uv.dependencies.install import UvPackage
+
+            project = UvPackage(temp_path)
+            install_base = Path(temp_dir) / "install"
+
+            mock_run.return_value = MagicMock(returncode=0)
+
+            with self.assertLogs("colcon.uv.dependencies", level="WARNING") as cm:
+                self.install_dependencies(
+                    project, install_base, False,
+                    dependency_groups=["nonexistent"],
+                )
+
+            self.assertTrue(
+                any("nonexistent" in msg for msg in cm.output)
+            )
+
+            # No --group call should be made since the only requested group doesn't exist
+            group_calls = [
+                call for call in mock_run.call_args_list
+                if any("--group" in str(arg) for arg in call.args[0])
+            ]
+            self.assertEqual(len(group_calls), 0)
+
+    @patch("subprocess.run")
+    def test_per_package_default_groups(self, mock_run):
+        """Test that [tool.colcon-uv-ros].dependency-groups sets per-package defaults."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            pyproject_content = """
+[project]
+name = "test_package"
+
+[tool.colcon-uv-ros]
+name = "test_package"
+dependency-groups = ["dev"]
+
+[dependency-groups]
+dev = ["pytest"]
+lint = ["ruff"]
+docs = ["sphinx"]
+"""
+            (temp_path / "pyproject.toml").write_text(pyproject_content)
+
+            from colcon_uv.dependencies.install import UvPackage
+
+            project = UvPackage(temp_path)
+            install_base = Path(temp_dir) / "install"
+
+            mock_run.return_value = MagicMock(returncode=0)
+
+            # dependency_groups=None triggers per-package default lookup
+            self.install_dependencies(project, install_base, False, dependency_groups=None)
+
+            group_calls = [
+                call for call in mock_run.call_args_list
+                if any("--group" in str(arg) for arg in call.args[0])
+            ]
+            self.assertEqual(len(group_calls), 1)
+            cmd = group_calls[0].args[0]
+            group_indices = [i for i, x in enumerate(cmd) if x == "--group"]
+            group_values = [cmd[i + 1] for i in group_indices]
+            # Only "dev" should be installed (per-package default), not lint or docs
+            self.assertEqual(group_values, ["dev"])
+
+    @patch("subprocess.run")
+    def test_cli_overrides_per_package_default(self, mock_run):
+        """Test that CLI --dependency-groups overrides per-package default."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            pyproject_content = """
+[project]
+name = "test_package"
+
+[tool.colcon-uv-ros]
+name = "test_package"
+dependency-groups = ["dev"]
+
+[dependency-groups]
+dev = ["pytest"]
+lint = ["ruff"]
+"""
+            (temp_path / "pyproject.toml").write_text(pyproject_content)
+
+            from colcon_uv.dependencies.install import UvPackage
+
+            project = UvPackage(temp_path)
+            install_base = Path(temp_dir) / "install"
+
+            mock_run.return_value = MagicMock(returncode=0)
+
+            # CLI specifies lint, overriding per-package default of dev
+            self.install_dependencies(
+                project, install_base, False, dependency_groups=["lint"]
+            )
+
+            group_calls = [
+                call for call in mock_run.call_args_list
+                if any("--group" in str(arg) for arg in call.args[0])
+            ]
+            self.assertEqual(len(group_calls), 1)
+            cmd = group_calls[0].args[0]
+            group_indices = [i for i, x in enumerate(cmd) if x == "--group"]
+            group_values = [cmd[i + 1] for i in group_indices]
+            self.assertEqual(group_values, ["lint"])
+
+    @patch("subprocess.run")
+    def test_per_package_default_unknown_group_warning(self, mock_run):
+        """Test that unknown groups in per-package default produce a warning."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            pyproject_content = """
+[project]
+name = "test_package"
+
+[tool.colcon-uv-ros]
+name = "test_package"
+dependency-groups = ["dev", "nonexistent"]
+
+[dependency-groups]
+dev = ["pytest"]
+"""
+            (temp_path / "pyproject.toml").write_text(pyproject_content)
+
+            from colcon_uv.dependencies.install import UvPackage
+
+            project = UvPackage(temp_path)
+            install_base = Path(temp_dir) / "install"
+
+            mock_run.return_value = MagicMock(returncode=0)
+
+            with self.assertLogs("colcon.uv.dependencies", level="WARNING") as cm:
+                self.install_dependencies(
+                    project, install_base, False, dependency_groups=None
+                )
+
+            self.assertTrue(any("nonexistent" in msg for msg in cm.output))
+
+            # Only "dev" should be installed
+            group_calls = [
+                call for call in mock_run.call_args_list
+                if any("--group" in str(arg) for arg in call.args[0])
+            ]
+            self.assertEqual(len(group_calls), 1)
+            cmd = group_calls[0].args[0]
+            group_indices = [i for i, x in enumerate(cmd) if x == "--group"]
+            group_values = [cmd[i + 1] for i in group_indices]
+            self.assertEqual(group_values, ["dev"])
+
+    @patch("colcon_uv.dependencies.install.install_dependencies")
+    def test_from_descriptor_passes_dependency_groups(self, mock_install):
+        """Test that install_dependencies_from_descriptor passes dependency_groups through."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            pyproject_content = """
+[project]
+name = "test_package"
+
+[tool.colcon-uv-ros]
+name = "test_package"
+"""
+            (temp_path / "pyproject.toml").write_text(pyproject_content)
+
+            desc = PackageDescriptor(temp_path)
+            desc.name = "test_package"
+            install_base = Path(temp_dir) / "install"
+
+            self.install_dependencies_from_descriptor(
+                desc, install_base, False, dependency_groups=["dev"]
+            )
+
+            mock_install.assert_called_once()
+            call_kwargs = mock_install.call_args
+            self.assertEqual(call_kwargs.kwargs["dependency_groups"], ["dev"])
+
+
 if __name__ == "__main__":
     unittest.main()

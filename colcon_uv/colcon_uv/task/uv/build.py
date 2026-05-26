@@ -29,6 +29,27 @@ class UvBuildTask(TaskExtensionPoint):
             "Arguments matching other options must be prefixed by a space,\n"
             'e.g. --uv-args " --help"',
         )
+        parser.add_argument(
+            "--dependency-groups",
+            nargs="*",
+            metavar="GROUP",
+            type=str,
+            default=None,
+            help="Specify which dependency groups to install. "
+            "If not provided, all groups are installed. "
+            "Pass with no arguments to install no groups.",
+        )
+        parser.add_argument(
+            "--extras",
+            nargs="*",
+            metavar="EXTRA",
+            type=str,
+            default=None,
+            help="Specify which optional dependency extras to install. "
+            "If not provided, all extras are installed "
+            "(or per-package default from [tool.colcon-uv-ros].extras). "
+            "Pass with no arguments to install no extras.",
+        )
 
     async def build(self, *, additional_hooks=None):
         pkg = self.context.pkg
@@ -38,7 +59,13 @@ class UvBuildTask(TaskExtensionPoint):
         # This uses uv pip install to achieve dependency and package installation
         # similar to uv sync, but without lockfiles
         logger.info("Installing package with all dependencies...")
-        install_dependencies_from_descriptor(pkg, Path(args.install_base), False)
+        dependency_groups = getattr(args, "dependency_groups", None)
+        extras = getattr(args, "extras", None)
+        install_dependencies_from_descriptor(
+            pkg, Path(args.install_base), False,
+            dependency_groups=dependency_groups,
+            extras=extras,
+        )
 
         # Handle ROS-specific stuff (data files, environment hooks, etc.)
         return_code = await self._add_data_files()
